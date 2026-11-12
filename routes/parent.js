@@ -3,6 +3,10 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Siswa = require('../models/Siswa');
 const Sholat = require('../models/Sholat');
+const BirrulWalidain = require('../models/BirrulWalidain');
+const Tahfidz = require('../models/Tahfidz');
+const CatatanWalkes = require('../models/CatatanWalkes');
+const Counter = require('../models/Counter');
 const auth = require('../middleware/auth');
 const { toWIB, daysAgo } = require('../utils/date');
 
@@ -40,6 +44,7 @@ const formatSiswa = (s) => ({
   jenis_kelamin: s.jenisKelamin,
   foto: s.foto,
   photo: s.foto,
+  profile_photo: s.foto,
   status: 'Aktif',
 });
 
@@ -54,6 +59,27 @@ const formatSholat = (rec, tanggal) => {
   });
   return out;
 };
+
+const nextBirrulWalidainId = async () => {
+  const counter = await Counter.findByIdAndUpdate(
+    'birrul-walidain',
+    { $inc: { seq: 1 } },
+    { new: true, upsert: true, setDefaultsOnInsert: true }
+  );
+  return counter.seq;
+};
+
+const formatBirrulWalidain = (record, siswaId) => ({
+  id: record.id,
+  siswa_id: siswaId,
+  tanggal: record.tanggal,
+  tempat: record.tempat,
+  kegiatan: record.kegiatan,
+  hafalan_surah: record.hafalanSurah,
+  baca_buku: record.bacaBuku,
+  lain_lain: record.lainLain,
+  status_approval: record.statusApproval,
+});
 
 // POST /api/parent/login
 router.post('/login', wrap(async (req, res) => {
@@ -90,6 +116,28 @@ router.get('/siswa', auth, wrap(async (req, res) => {
   res.json({ success: true, message: 'OK', data: list.map(formatSiswa) });
 }));
 
+// GET /api/parent/catatan-walkes (header/query: id_siswa)
+router.get('/catatan-walkes', auth, wrap(async (req, res) => {
+  const siswa = await resolveSiswa(req);
+  if (!siswa) return notFoundSiswa(res);
+
+  const records = await CatatanWalkes.find({ id_siswa: siswa.idSiswa })
+    .sort({ tanggal: -1, id: -1 })
+    .select('id tanggal mapel catatan')
+    .lean();
+
+  res.json({
+    success: true,
+    message: 'OK',
+    data: records.map((record) => ({
+      id: record.id,
+      tanggal: record.tanggal,
+      mapel: record.mapel,
+      catatan: record.catatan,
+    })),
+  });
+}));
+
 // GET /api/parent/dashboard   (header: id_siswa)
 router.get('/dashboard', auth, wrap(async (req, res) => {
   const siswa = await resolveSiswa(req);
@@ -115,6 +163,19 @@ router.get('/dashboard', auth, wrap(async (req, res) => {
   });
 }));
 
+// GET /api/parent/sholat? id_siswa=...
+router.get('/sholat', auth, wrap(async (req, res) => {
+  const siswa = await resolveSiswa(req);
+  if (!siswa) return notFoundSiswa(res);
+
+  const records = await Sholat.find({ siswa: siswa._id }).sort({ tanggal: -1 });
+  res.json({
+    success: true,
+    message: 'OK',
+    data: records.map((record) => formatSholat(record, record.tanggal)),
+  });
+}));
+
 // GET /api/parent/sholat/hari-ini   (header: id_siswa)
 router.get('/sholat/hari-ini', auth, wrap(async (req, res) => {
   const siswa = await resolveSiswa(req);
@@ -123,6 +184,79 @@ router.get('/sholat/hari-ini', auth, wrap(async (req, res) => {
   const today = toWIB();
   const rec = await Sholat.findOne({ siswa: siswa._id, tanggal: today });
   res.json({ success: true, message: 'OK', data: formatSholat(rec, today) });
+}));
+
+// GET /api/parent/birul-walidain (header: id_siswa)
+router.get('/birul-walidain', auth, wrap(async (req, res) => {
+  const siswa = await resolveSiswa(req);
+  if (!siswa) return notFoundSiswa(res);
+
+  const records = await BirrulWalidain.find({ siswa: siswa._id })
+    .sort({ tanggal: -1, createdAt: -1 });
+
+  res.json({
+    success: true,
+    message: 'OK',
+    data: records.map((record) => formatBirrulWalidain(record, siswa.idSiswa)),
+  });
+}));
+
+// POST /api/parent/birul-walidain (header: id_siswa)
+router.post('/birul-walidain', auth, wrap(async (req, res) => {
+  const siswa = await resolveSiswa(req);
+  if (!siswa) return notFoundSiswa(res);
+
+  const kegiatan = String(req.body?.kegiatan || '').trim();
+  if (!kegiatan) {
+    return res.status(400).json({
+      success: false,
+      message: 'Kegiatan wajib diisi',
+      data: null,
+    });
+  }
+
+  const record = await BirrulWalidain.create({
+    id: await nextBirrulWalidainId(),
+    siswa: siswa._id,
+    tanggal: toWIB(),
+    tempat: req.body?.tempat || '',
+    kegiatan,
+    hafalanSurah: req.body?.hafalan_surah || '',
+    bacaBuku: req.body?.baca_buku || '',
+    lainLain: req.body?.lain_lain || '',
+    catatan: req.body?.catatan || '',
+  });
+
+  res.status(201).json({
+    success: true,
+    message: 'Data Birrul Walidain berhasil disimpan',
+    data: formatBirrulWalidain(record, siswa.idSiswa),
+  });
+}));
+
+// GET /api/parent/tahfidz (header: id_siswa)
+router.get('/tahfidz', auth, wrap(async (req, res) => {
+  const siswa = await resolveSiswa(req);
+  if (!siswa) return notFoundSiswa(res);
+
+  const records = await Tahfidz.find({ siswa: siswa._id })
+    .populate('siswa', 'nama')
+    .sort({ tanggal: -1, createdAt: -1 });
+
+  res.json({
+    success: true,
+    message: 'Berhasil',
+    data: records.map((record) => ({
+      siswa: record.siswa?.nama || '',
+      tanggal: record.tanggal,
+      juz: record.juz,
+      surah: record.surah,
+      ayat: record.ayat,
+      guru: record.guru,
+      ttd: record.ttd,
+      keterangan: record.keterangan,
+    })),
+  });
 }));
 
 // POST /api/parent/sholat  (buat/ubah data sholat hari ini; juga menangani ?_method=PUT)

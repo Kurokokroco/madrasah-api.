@@ -2,11 +2,12 @@
   "name": "madrasah-api",
   "version": "1.0.0",
   "description": "REST API untuk aplikasi Android Madrasah",
-  "main": "server.js",
+  "main": "app.js",
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "seed": "node seed.js"
+    "seed": "node seed.js",
+    "seed:catatan-walkes": "node scripts/seed-catatan-walkes.js"
   },
   "engines": { "node": ">=18" },
   "dependencies": {

@@ -1,13 +1,27 @@
 const mongoose = require('mongoose');
 
+let connectionPromise;
+
 const connectDB = async () => {
-  try {
-    await mongoose.connect(process.env.MONGODB_URI);
-    console.log('MongoDB terhubung:', mongoose.connection.host);
-  } catch (err) {
-    console.error('Gagal konek MongoDB:', err.message);
-    process.exit(1);
+  if (!process.env.MONGODB_URI) {
+    throw new Error('MONGODB_URI wajib diisi');
   }
+
+  if (mongoose.connection.readyState === 1) return mongoose.connection;
+
+  if (!connectionPromise) {
+    connectionPromise = mongoose.connect(process.env.MONGODB_URI)
+      .then(() => {
+        console.log('MongoDB terhubung');
+        return mongoose.connection;
+      })
+      .catch((err) => {
+        connectionPromise = null;
+        throw err;
+      });
+  }
+
+  return connectionPromise;
 };
 
 module.exports = connectDB;
