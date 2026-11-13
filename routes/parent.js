@@ -1,5 +1,7 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
+const multer = require('multer');
+const { v2: cloudinary } = require('cloudinary');
 const User = require('../models/User');
 const Siswa = require('../models/Siswa');
 const Sholat = require('../models/Sholat');
@@ -13,6 +15,11 @@ const auth = require('../middleware/auth');
 const { toWIB, daysAgo } = require('../utils/date');
 
 const router = express.Router();
+
+// Vercel's filesystem is ephemeral; upload directly from memory to Cloudinary.
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 3 * 1024 * 1024 } });
+
+const baseUrl = (req) => `${req.headers['x-forwarded-proto'] || req.protocol}://${req.get('host')}`;
 
 const WAJIB = ['subuh', 'dhuhur', 'ashar', 'maghrib', 'isya'];
 const FIELDS = [...WAJIB, 'dhuha', 'tahajjud', 'qobliyah', 'badiyah'];
@@ -36,18 +43,81 @@ const resolveSiswa = async (req) => {
 const notFoundSiswa = (res) =>
   res.status(404).json({ success: false, message: 'Siswa tidak ditemukan', data: null });
 
-const formatSiswa = (s) => ({
-  id: s.idSiswa,
-  id_siswa: s.idSiswa,
-  name: s.nama,
-  nama: s.nama,
-  nis: s.nis,
-  kelas: s.kelas,
-  jenis_kelamin: s.jenisKelamin,
-  foto: s.foto,
-  photo: s.foto,
-  profile_photo: s.foto,
-  status: 'Aktif',
+const formatSiswa = (s, req) => {
+  const foto = s.fotoAda
+    ? `${baseUrl(req)}/api/parent/foto/${s.idSiswa}?v=${new Date(s.updatedAt).getTime()}`
+    : s.foto || '';
+  return {
+    id: s.idSiswa,
+    id_siswa: s.idSiswa,
+    name: s.nama,
+    nama: s.nama,
+    nis: s.nis,
+    kelas: s.kelas,
+    jenis_kelamin: s.jenisKelamin,
+    foto,
+    photo: foto,
+    profile_photo: foto,
+    status: 'Aktif',
+  };
+};
+
+const isSupportedImage = (file) => {
+  const buffer = file.buffer;
+  if (file.mimetype === 'image/jpeg') {
+    return buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+  }
+  if (file.mimetype === 'image/png') {
+    const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    return buffer.length >= signature.length && buffer.subarray(0, signature.length).equals(signature);
+  }
+  return file.mimetype === 'image/webp'
+    && buffer.length >= 12
+    && buffer.toString('ascii', 0, 4) === 'RIFF'
+    && buffer.toString('ascii', 8, 12) === 'WEBP';
+};
+
+const configureCloudinary = () => {
+  if (process.env.CLOUDINARY_URL) {
+    let url;
+    try {
+      url = new URL(process.env.CLOUDINARY_URL);
+    } catch (err) {
+      return false;
+    }
+    if (url.protocol !== 'cloudinary:' || !url.hostname || !url.username || !url.password) return false;
+    cloudinary.config({
+      cloud_name: url.hostname,
+      api_key: decodeURIComponent(url.username),
+      api_secret: decodeURIComponent(url.password),
+    });
+    return true;
+  }
+
+  const { CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET } = process.env;
+  if (!CLOUDINARY_CLOUD_NAME || !CLOUDINARY_API_KEY || !CLOUDINARY_API_SECRET) return false;
+  cloudinary.config({
+    cloud_name: CLOUDINARY_CLOUD_NAME,
+    api_key: CLOUDINARY_API_KEY,
+    api_secret: CLOUDINARY_API_SECRET,
+  });
+  return true;
+};
+
+const uploadProfilePhoto = (buffer, siswaId) => new Promise((resolve, reject) => {
+  cloudinary.uploader.upload_stream(
+    {
+      folder: 'madrasah/profile',
+      public_id: `siswa-${siswaId}`,
+      overwrite: true,
+      resource_type: 'image',
+    },
+    (err, result) => {
+      if (err) return reject(err);
+      if (!result?.secure_url) return reject(new Error('Cloudinary tidak mengembalikan secure_url'));
+      return resolve(result.secure_url);
+    }
+  ).end(buffer);
 });
 
 const formatSholat = (rec, tanggal) => {
@@ -115,7 +185,82 @@ router.post('/login', wrap(async (req, res) => {
 // GET /api/parent/siswa
 router.get('/siswa', auth, wrap(async (req, res) => {
   const list = await Siswa.find({ parent: req.user.id }).sort('idSiswa');
-  res.json({ success: true, message: 'OK', data: list.map(formatSiswa) });
+  res.json({ success: true, message: 'OK', data: list.map((s) => formatSiswa(s, req)) });
+}));
+
+// POST /api/parent/siswa (multipart image; header: id_siswa)
+router.post(
+  '/siswa',
+  auth,
+  (req, res, next) => {
+    upload.single('image')(req, res, (err) => {
+      if (err) {
+        const status = err.code === 'LIMIT_FILE_SIZE' ? 413 : 400;
+        const message = err.code === 'LIMIT_FILE_SIZE'
+          ? 'Ukuran foto maksimal 3 MB'
+          : 'Format upload foto tidak valid';
+        return res.status(status).json({ success: false, message, data: null });
+      }
+      next();
+    });
+  },
+  wrap(async (req, res) => {
+    const siswa = await resolveSiswa(req);
+    if (!siswa) return notFoundSiswa(res);
+
+    const file = req.file;
+    if (!file || !isSupportedImage(file)) {
+      return res.status(422).json({
+        success: false,
+        message: 'Kirim foto JPEG, PNG, atau WebP dengan field "image"',
+        data: null,
+      });
+    }
+
+    try {
+      if (!configureCloudinary()) {
+        console.error('Cloudinary belum dikonfigurasi');
+        return res.status(503).json({
+          success: false,
+          message: 'Penyimpanan foto belum dikonfigurasi di server',
+          data: null,
+        });
+      }
+
+      const foto = await uploadProfilePhoto(file.buffer, siswa.idSiswa);
+      const updatedSiswa = await Siswa.findByIdAndUpdate(
+        siswa._id,
+        {
+          $set: { foto, fotoAda: false, fotoType: '' },
+          $unset: { fotoData: 1 },
+        },
+        { new: true, runValidators: true }
+      );
+      if (!updatedSiswa) return notFoundSiswa(res);
+
+      return res.json({
+        success: true,
+        message: 'Foto berhasil diperbarui',
+        data: formatSiswa(updatedSiswa, req),
+      });
+    } catch (err) {
+      console.error('Gagal mengunggah foto ke Cloudinary:', err.http_code || err.name || 'Error');
+      return res.status(502).json({
+        success: false,
+        message: 'Gagal mengunggah foto ke penyimpanan',
+        data: null,
+      });
+    }
+  })
+);
+
+// GET /api/parent/foto/:idSiswa  (publik, supaya bisa dimuat oleh library gambar)
+router.get('/foto/:idSiswa', wrap(async (req, res) => {
+  const siswa = await Siswa.findOne({ idSiswa: parseInt(req.params.idSiswa, 10) }).select('+fotoData fotoType');
+  if (!siswa || !siswa.fotoData) return res.status(404).end();
+  res.set('Content-Type', siswa.fotoType || 'image/jpeg');
+  res.set('Cache-Control', 'public, max-age=300');
+  res.send(siswa.fotoData);
 }));
 
 // GET /api/parent/catatan-walkes (header/query: id_siswa)

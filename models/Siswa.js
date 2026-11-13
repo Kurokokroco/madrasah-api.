@@ -8,6 +8,9 @@ const siswaSchema = new mongoose.Schema(
     kelas: { type: String, required: true },
     jenisKelamin: { type: String, enum: ['L', 'P'], required: true },
     foto: { type: String, default: '' },
+    fotoAda: { type: Boolean, default: false },
+    fotoType: { type: String, default: '' },
+    fotoData: { type: Buffer, select: false }, // isi foto (tidak ikut dimuat di query biasa)
     parent: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
   },
   { timestamps: true }
