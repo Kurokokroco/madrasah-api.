@@ -6,6 +6,7 @@ const Sholat = require('../models/Sholat');
 const BirrulWalidain = require('../models/BirrulWalidain');
 const Tahfidz = require('../models/Tahfidz');
 const QuranReading = require('../models/QuranReading');
+const Btq = require('../models/Btq');
 const CatatanWalkes = require('../models/CatatanWalkes');
 const Counter = require('../models/Counter');
 const auth = require('../middleware/auth');
@@ -283,6 +284,62 @@ router.get('/tahfidz', auth, wrap(async (req, res) => {
       ttd: record.ttd,
       keterangan: record.keterangan,
     })),
+  });
+}));
+
+// GET /api/parent/btq (header: id_siswa, query: kelas_id)
+router.get('/btq', auth, wrap(async (req, res) => {
+  const siswa = await resolveSiswa(req);
+  if (!siswa) {
+    return res.status(404).json({ status: 'error', data: null });
+  }
+
+  const requestedClassId = req.query.kelas_id;
+  const kelasId = requestedClassId === undefined ? null : Number(requestedClassId);
+  if (requestedClassId !== undefined && (!Number.isSafeInteger(kelasId) || kelasId <= 0)) {
+    return res.status(400).json({ status: 'error', data: null });
+  }
+
+  const classes = await Btq.find({ siswa: siswa._id })
+    .sort({ sedangAktif: -1, idKelas: 1 })
+    .lean();
+  const currentClass = kelasId === null
+    ? classes.find((item) => item.sedangAktif) || classes[0]
+    : classes.find((item) => item.idKelas === kelasId);
+
+  if (kelasId !== null && !currentClass) {
+    return res.status(404).json({ status: 'error', data: null });
+  }
+
+  res.json({
+    status: 'success',
+    data: {
+      kelas_tersedia: classes.map((item) => ({
+        id_kelas: item.idKelas,
+        nama_kelas: item.namaKelas,
+        tahun_ajaran: item.tahunAjaran,
+        sedang_aktif: item.sedangAktif,
+      })),
+      id_kelas_saat_ini: currentClass?.idKelas || 0,
+      materi: (currentClass?.materi || []).map((item) => ({
+        id: item.id,
+        judul: item.judul,
+        tipe_materi: item.tipeMateri,
+        deskripsi: item.deskripsi,
+        semester: item.semester,
+        sudah_dinilai: !!item.penilaian,
+        penilaian: item.penilaian
+          ? {
+              id: item.penilaian.id,
+              nilai: item.penilaian.nilai,
+              tanggal: item.penilaian.tanggal,
+              disetujui: item.penilaian.disetujui,
+              catatan: item.penilaian.catatan,
+              nama_guru: item.penilaian.namaGuru,
+            }
+          : null,
+      })),
+    },
   });
 }));
 
