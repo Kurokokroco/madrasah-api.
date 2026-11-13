@@ -5,6 +5,7 @@ const Siswa = require('../models/Siswa');
 const Sholat = require('../models/Sholat');
 const BirrulWalidain = require('../models/BirrulWalidain');
 const Tahfidz = require('../models/Tahfidz');
+const QuranReading = require('../models/QuranReading');
 const CatatanWalkes = require('../models/CatatanWalkes');
 const Counter = require('../models/Counter');
 const auth = require('../middleware/auth');
@@ -231,6 +232,32 @@ router.post('/birul-walidain', auth, wrap(async (req, res) => {
     success: true,
     message: 'Data Birrul Walidain berhasil disimpan',
     data: formatBirrulWalidain(record, siswa.idSiswa),
+  });
+}));
+
+// GET /api/parent/quran-reading (header: id_siswa)
+router.get('/quran-reading', auth, wrap(async (req, res) => {
+  const siswa = await resolveSiswa(req);
+  if (!siswa) return notFoundSiswa(res);
+
+  const records = await QuranReading.find({ siswa: siswa._id })
+    .populate('siswa', 'nama')
+    .sort({ tanggal: -1, createdAt: -1 });
+
+  res.json({
+    success: true,
+    message: 'Berhasil',
+    data: records.map((record) => ({
+      siswa: record.siswa?.nama || '',
+      ustad: record.ustad,
+      tanggal: record.tanggal,
+      juz: record.juz,
+      surah: record.surah,
+      ayat: record.ayat,
+      halaman: record.halaman,
+      keterangan: record.keterangan,
+      ttd: record.ttd,
+    })),
   });
 }));
 
